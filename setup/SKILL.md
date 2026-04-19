@@ -81,6 +81,17 @@ whisperkit-cli transcribe --model large-v3 --audio-path /dev/null 2>&1 || true
 
 ## 실행 가이드
 
+### 검사 스크립트
+
+`scripts/check-env.sh`로 모든 항목을 한 번에 검사할 수 있다:
+
+```bash
+bash scripts/check-env.sh          # 터미널 출력
+bash scripts/check-env.sh --json   # JSON 출력 (프로그래밍용)
+```
+
+종료 코드: `0` = 모두 통과, `1` = 필수 항목 FAIL, `2` = 플랫폼 비호환
+
 ### 출력 형식
 
 모든 검사 후 결과를 테이블로 보여준다:
@@ -90,13 +101,13 @@ whisperkit-cli transcribe --model large-v3 --audio-path /dev/null 2>&1 || true
 
 | 항목                  | 상태 | 비고                          |
 |-----------------------|------|-------------------------------|
-| Apple Silicon         | ✅   | arm64                         |
-| macOS 버전            | ✅   | 15.3                          |
-| Homebrew              | ✅   | /opt/homebrew/bin/brew        |
-| whisperkit-cli        | ❌   | 미설치                        |
-| ffmpeg/ffprobe        | ✅   | /opt/homebrew/bin/ffmpeg      |
-| WhisperKit 모델 캐시  | ⚠️   | 첫 실행 시 ~1.5GB 다운로드   |
-| inbox 디렉토리        | ✅   | 존재                          |
+| Apple Silicon         | PASS | arm64                         |
+| macOS 버전            | PASS | 15.3                          |
+| Homebrew              | PASS | /opt/homebrew/bin/brew        |
+| whisperkit-cli        | FAIL | 미설치                        |
+| ffmpeg/ffprobe        | PASS | /opt/homebrew/bin/ffmpeg      |
+| WhisperKit 모델 캐시  | WARN | 첫 실행 시 ~1.5GB 다운로드   |
+| inbox 디렉토리        | PASS | 존재                          |
 ```
 
 ### 동작 순서
