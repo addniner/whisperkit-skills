@@ -16,6 +16,22 @@ This repository contains three skills:
 
 The skills are Korean-first. Transcription and meeting summarization are separate, composable steps: use `whisperkit` alone for transcripts or subtitles, `meeting-summary` alone for existing transcripts, or run both for a complete meeting-notes workflow.
 
+## Installation
+
+Install from the public GitHub repository with the Skills CLI:
+
+```bash
+npx skills add finetension/whisperkit-skills
+```
+
+To install all three skills globally for every detected agent:
+
+```bash
+npx skills add finetension/whisperkit-skills -g --all
+```
+
+The repository exposes `whisperkit`, `meeting-summary`, and `setup`. Use `--skill <name>` to install only selected skills.
+
 ## Requirements
 
 - macOS 14+
