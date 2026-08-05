@@ -29,7 +29,7 @@ fi
 PREV_SPEAKER=""
 
 # "---- Speaker Diarization Results ----" 이후의 SPEAKER 라인만 파싱
-sed -n '/Speaker Diarization Results/,$ { /^SPEAKER /p }' "$RAW_FILE" | while IFS= read -r line; do
+sed -n '/Speaker Diarization Results/,$ { /^SPEAKER /p; }' "$RAW_FILE" | while IFS= read -r line; do
     # SPEAKER 파일명 채널 시작시간 길이 텍스트 <NA> 화자라벨 <NA> <NA>
     START_SEC=$(echo "$line" | awk '{print $4}')
     SPEAKER_LABEL=$(echo "$line" | awk -F'<NA>' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -52,8 +52,8 @@ sed -n '/Speaker Diarization Results/,$ { /^SPEAKER /p }' "$RAW_FILE" | while IF
     # 시작시간(초) → HH:MM:SS 변환
     HOURS=$(echo "$START_SEC" | awk '{printf "%02d", int($1/3600)}')
     MINUTES=$(echo "$START_SEC" | awk '{printf "%02d", int(($1%3600)/60)}')
-    SECONDS=$(echo "$START_SEC" | awk '{printf "%02d", int($1%60)}')
-    TIMESTAMP="${HOURS}:${MINUTES}:${SECONDS}"
+    TS_SECONDS=$(echo "$START_SEC" | awk '{printf "%02d", int($1%60)}')
+    TIMESTAMP="${HOURS}:${MINUTES}:${TS_SECONDS}"
 
     # 화자가 바뀔 때만 라벨 출력
     if [ "$SPEAKER_LABEL" != "$PREV_SPEAKER" ]; then
