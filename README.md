@@ -18,11 +18,19 @@ The skills are Korean-first. Transcription and meeting summarization are separat
 
 ## Requirements
 
-- macOS 13+
+- macOS 14+
 - Apple Silicon
-- Homebrew
 - `whisperkit-cli`
 - `ffmpeg` / `ffprobe`
+
+Homebrew is the recommended installer for the command-line dependencies, but it is not a runtime requirement when those commands are already available:
+
+```bash
+brew install whisperkit-cli
+brew install ffmpeg
+```
+
+All environment decisions go through the read-only `setup/scripts/check-env.sh` preflight. Skills consume its JSON result instead of repeating platform and dependency checks independently.
 
 ## Layout
 
@@ -42,20 +50,24 @@ setup/
 
 ## Notes
 
-WhisperKit runs on-device through Apple Silicon/Core ML. FFmpeg converts the first audio stream of each input to mono 16 kHz PCM WAV while preserving the original media. Speaker diarization output is captured from CLI stdout, so the workflow preserves raw command output before generating the final transcript.
+WhisperKit runs on-device through Apple Silicon/Core ML. FFmpeg converts the selected audio stream (the first by default) to mono 16 kHz PCM WAV while preserving the original media. Speaker diarization output is captured from CLI stdout, so the workflow preserves raw command output before generating the final transcript.
 
-The resulting recording folder keeps a stable contract:
+On first use, the workflow asks whether to keep recording folders flat in the current directory or group them under a `recordings/` root. Existing layouts are detected and reused automatically. The grouped layout is recommended:
 
 ```txt
-rec_YYYY-MM-DD_NNN/
-  audio.<original-extension>
-  transcript.txt
-  summary.md                 # only after meeting-summary runs
-  data/
-    audio.wav                # normalized STT input
-    raw.txt
-    audio.json
-    audio.srt
+recordings/
+  inbox/
+  rec_YYYY-MM-DD_NNN/
+    audio.<original-extension>
+    transcript.txt
+    summary.md                 # only after meeting-summary runs
+    data/
+      audio.wav                # normalized STT input
+      raw.txt
+      audio.json
+      audio.srt
 ```
+
+Choosing the flat layout produces the same `inbox/` and `rec_*` entries directly in the current directory.
 
 Maintained by [Fine Tension](https://github.com/finetension).

@@ -1,5 +1,6 @@
 #!/bin/bash
-# WhisperKit 트랜스크립션 환경 검사 스크립트
+# WhisperKit 트랜스크립션 환경의 단일 검사 진입점
+# 이 스크립트는 읽기 전용이며 설치나 디렉토리 생성을 수행하지 않는다.
 #
 # 사용법:
 #   bash check-env.sh          # 검사만 수행
@@ -8,7 +9,7 @@
 # 종료 코드:
 #   0 — 모든 필수 항목 통과
 #   1 — 필수 항목 중 FAIL 있음
-#   2 — 플랫폼 비호환 (Apple Silicon 아님 또는 macOS 13 미만)
+#   2 — 플랫폼 비호환 (Apple Silicon 아님 또는 macOS 14 미만)
 
 set -euo pipefail
 
@@ -24,6 +25,8 @@ if [ "$JSON_MODE" = false ]; then
     PASS="${GREEN}PASS${NC}"
     FAIL="${RED}FAIL${NC}"
     WARN="${YELLOW}WARN${NC}"
+    printf "| %-22s | %-4s | %s |\n" "항목" "상태" "비고"
+    printf "|------------------------|------|-------------------------------|\n"
 fi
 
 HAS_FAIL=false
@@ -38,9 +41,9 @@ add_result() {
         RESULTS+=("{\"name\":\"$name\",\"status\":\"$status\",\"detail\":\"$detail\"}")
     else
         case "$status" in
-            pass) printf "| %-22s | %b | %s\n" "$name" "$PASS" "$detail" ;;
-            fail) printf "| %-22s | %b | %s\n" "$name" "$FAIL" "$detail" ;;
-            warn) printf "| %-22s | %b | %s\n" "$name" "$WARN" "$detail" ;;
+            pass) printf "| %-22s | %b | %s |\n" "$name" "$PASS" "$detail" ;;
+            fail) printf "| %-22s | %b | %s |\n" "$name" "$FAIL" "$detail" ;;
+            warn) printf "| %-22s | %b | %s |\n" "$name" "$WARN" "$detail" ;;
         esac
     fi
     if [ "$status" = "fail" ]; then HAS_FAIL=true; fi
@@ -59,10 +62,10 @@ fi
 if command -v sw_vers &>/dev/null; then
     MACOS_VER=$(sw_vers -productVersion)
     MAJOR=$(echo "$MACOS_VER" | cut -d. -f1)
-    if [ "$MAJOR" -ge 13 ]; then
+    if [ "$MAJOR" -ge 14 ]; then
         add_result "macOS 버전" "pass" "$MACOS_VER"
     else
-        add_result "macOS 버전" "fail" "$MACOS_VER — macOS 13 이상 필요"
+        add_result "macOS 버전" "fail" "$MACOS_VER — macOS 14 이상 필요"
         PLATFORM_OK=false
     fi
 else
@@ -73,7 +76,7 @@ fi
 # 플랫폼 비호환이면 나머지 스킵
 if [ "$PLATFORM_OK" = false ]; then
     if [ "$JSON_MODE" = true ]; then
-        printf '{"platform_ok":false,"results":[%s]}' "$(IFS=,; echo "${RESULTS[*]}")"
+        printf '{"schema_version":1,"platform_ok":false,"has_fail":true,"results":[%s]}\n' "$(IFS=,; echo "${RESULTS[*]}")"
     else
         echo ""
         echo "플랫폼이 호환되지 않아 나머지 검사를 건너뜁니다."
@@ -83,26 +86,42 @@ fi
 
 # ─── 3. Homebrew ───
 if command -v brew &>/dev/null; then
-    add_result "Homebrew" "pass" "$(which brew)"
+    add_result "Homebrew" "pass" "$(command -v brew)"
+elif [ -x "/opt/homebrew/bin/brew" ]; then
+    add_result "Homebrew" "warn" "설치됨, PATH 미설정 — brew shellenv 적용 필요"
 else
-    add_result "Homebrew" "fail" "미설치"
+    add_result "Homebrew" "warn" "미설치 — 기존 명령이 있으면 실행 가능"
 fi
 
-# ─── 4. whisperkit-cli ───
+# ─── 4. Homebrew 로그인 셸 설정 ───
+if [ -x "/opt/homebrew/bin/brew" ]; then
+    LOGIN_SHELL_BREW=$(
+        PATH="/usr/bin:/bin" /bin/zsh -lic 'command -v brew' 2>/dev/null \
+            | grep -Fx "/opt/homebrew/bin/brew" \
+            | tail -n 1 || true
+    )
+    if [ "$LOGIN_SHELL_BREW" = "/opt/homebrew/bin/brew" ]; then
+        add_result "Homebrew 로그인 셸" "pass" "$LOGIN_SHELL_BREW"
+    else
+        add_result "Homebrew 로그인 셸" "warn" "새 zsh에서 brew를 찾지 못함 — 셸 설정 필요"
+    fi
+fi
+
+# ─── 5. whisperkit-cli ───
 if command -v whisperkit-cli &>/dev/null; then
-    add_result "whisperkit-cli" "pass" "$(which whisperkit-cli)"
+    add_result "whisperkit-cli" "pass" "$(command -v whisperkit-cli)"
 else
     add_result "whisperkit-cli" "fail" "미설치 — brew install whisperkit-cli"
 fi
 
-# ─── 5. ffmpeg / ffprobe ───
+# ─── 6. ffmpeg / ffprobe ───
 if command -v ffmpeg &>/dev/null && command -v ffprobe &>/dev/null; then
-    add_result "ffmpeg/ffprobe" "pass" "$(which ffmpeg)"
+    add_result "ffmpeg/ffprobe" "pass" "$(command -v ffmpeg)"
 else
     add_result "ffmpeg/ffprobe" "fail" "미설치 — brew install ffmpeg"
 fi
 
-# ─── 6. WhisperKit 모델 캐시 ───
+# ─── 7. WhisperKit 모델 캐시 ───
 MODEL_FOUND=false
 for CACHE_DIR in \
     "$HOME/Library/Caches/huggingface/hub/models--argmaxinc--whisperkit-coreml" \
@@ -119,16 +138,9 @@ else
     add_result "WhisperKit 모델 캐시" "warn" "첫 실행 시 ~1.5GB 다운로드"
 fi
 
-# ─── 7. inbox 디렉토리 ───
-if [ -d "inbox" ]; then
-    add_result "inbox 디렉토리" "pass" "존재"
-else
-    add_result "inbox 디렉토리" "warn" "없음 — mkdir -p inbox 로 생성 가능"
-fi
-
 # ─── 출력 ───
 if [ "$JSON_MODE" = true ]; then
-    printf '{"platform_ok":true,"has_fail":%s,"results":[%s]}' "$HAS_FAIL" "$(IFS=,; echo "${RESULTS[*]}")"
+    printf '{"schema_version":1,"platform_ok":true,"has_fail":%s,"results":[%s]}\n' "$HAS_FAIL" "$(IFS=,; echo "${RESULTS[*]}")"
 else
     echo ""
     if [ "$HAS_FAIL" = true ]; then

@@ -7,19 +7,20 @@ description: "Apple Silicon에서 오디오·영상 파일을 WhisperKit용 오�
 
 WhisperKit CLI 기반 음성-텍스트 변환 스킬이다. 입력 미디어를 FFmpeg로 표준 WAV로 정규화하고 Apple Silicon Neural Engine에서 온디바이스로 전사한다. 이 스킬의 책임은 `transcript.txt` 생성까지이며 회의 요약은 작성하지 않는다.
 
-## 요구사항
+## 실행 요구사항
 
-- macOS 13+ (Apple Silicon 전용 — Intel Mac 미지원)
-- `whisperkit-cli` (`brew install whisperkit-cli`)
-- `ffmpeg`/`ffprobe` (`brew install ffmpeg`)
+- Apple Silicon 및 macOS 14+
+- `whisperkit-cli`, `ffmpeg`, `ffprobe`
 
-실행 전 반드시 의존성을 확인한다:
+환경 판정은 `setup/scripts/check-env.sh`만 사용한다. 이 스킬에서 `which`, `uname`, 버전 검사 등을 따로 반복하지 않는다.
 
 ```bash
-which whisperkit-cli && which ffmpeg && which ffprobe
+bash setup/scripts/check-env.sh --json
 ```
 
-하나라도 없으면 `setup` 스킬을 먼저 실행한다. 의존성 없이 진행하지 않는다.
+- `platform_ok=false` 또는 `has_fail=true`면 `setup` 스킬의 결과별 조치를 먼저 수행한다.
+- `warn`은 `detail`에 따라 처리하되 STT를 자동으로 중단하지 않는다.
+- 환경을 변경했다면 스크립트를 다시 실행하고 통과 결과를 확인한다.
 
 ## 책임 경계
 
@@ -31,52 +32,71 @@ which whisperkit-cli && which ffmpeg && which ffprobe
 ## 플로우 요약
 
 ```text
-inbox/ → 미디어 검사 → 날짜 추출 → rec_{날짜}_{번호}/ 생성 → 원본 이동
+저장 루트 선택 → inbox/ → 미디어 검사 → 날짜 추출 → rec_{날짜}_{번호}/ 생성 → 원본 이동
 → 16 kHz mono PCM WAV 정규화 → whisperkit-cli 실행 → 화자 파싱 → transcript.txt
 ```
 
 ## 출력 구조
 
 ```text
-rec_2026-03-30_001/
-├── audio.mov           # 원본 미디어, 원래 확장자 유지
-├── transcript.txt      # 화자 분리된 최종 전사본
-└── data/
-    ├── audio.wav       # STT용 16 kHz mono PCM 정규화 파일
-    ├── raw.txt         # whisperkit-cli stdout 전체 캡처
-    ├── audio.json      # 워드 단위 타임스탬프, 신뢰도 점수
-    └── audio.srt       # SRT 자막 파일
+recordings/                         # 권장 루트; 플랫 선택 시 생략
+├── inbox/
+└── rec_2026-03-30_001/
+    ├── audio.mov                   # 원본 미디어, 원래 확장자 유지
+    ├── transcript.txt              # 화자 분리된 최종 전사본
+    └── data/
+        ├── audio.wav               # STT용 16 kHz mono PCM 정규화 파일
+        ├── raw.txt                 # whisperkit-cli stdout 전체 캡처
+        ├── audio.json              # 워드 단위 타임스탬프, 신뢰도 점수
+        └── audio.srt               # SRT 자막 파일
 ```
 
 `meeting-summary`를 이어서 실행하면 같은 폴더에 `summary.md`가 추가된다.
 
 ## 에이전트 실행 가이드
 
-### Step 1: inbox 파일 확인
+### Step 1: 저장 루트 선택 및 inbox 확인
+
+사용자가 출력 루트를 명시했다면 그대로 사용한다. 명시하지 않았다면 기존 구조를 먼저 감지한다.
+
+1. `recordings/inbox/` 또는 `recordings/rec_*` 흔적만 있으면 `recordings`를 루트로 사용한다.
+2. 현재 폴더에 `inbox/` 또는 `rec_*` 흔적만 있으면 기존 플랫 구조를 유지하고 `.`을 루트로 사용한다.
+3. 두 구조가 모두 있으면 어느 쪽을 사용할지 사용자에게 확인한다.
+4. 어느 구조도 없으면 최초 한 번만 현재 폴더에 플랫하게 저장할지, `recordings/` 아래에 모을지 묻는다. `recordings/`를 권장값으로 제시한다.
+
+첫 결과 폴더가 생성된 뒤에는 위 감지 규칙으로 선택이 유지되므로 매번 다시 묻지 않는다. 선택한 값을 이후 모든 경로의 기준으로 사용한다.
 
 ```bash
-ls inbox/
+WK_ROOT="recordings"  # 플랫 구조는 ".", 사용자 지정 경로도 가능
+WK_INBOX="${WK_ROOT}/inbox"
+mkdir -p "$WK_INBOX"
+ls "$WK_INBOX"
 ```
 
-inbox가 비어 있으면 사용자에게 파일을 넣어달라고 안내한다. 사용자가 파일 경로를 직접 지정했다면 그 파일을 사용한다.
+inbox가 비어 있으면 사용자에게 파일을 넣어달라고 안내한다. 사용자가 파일 경로를 직접 지정했다면 inbox로 옮기지 않고 해당 파일을 입력으로 사용할 수 있지만, 결과는 선택한 루트에 저장한다.
 
 ### Step 2: 미디어와 오디오 스트림 검사
 
 ```bash
+# 아래 둘 중 입력 방식에 맞는 경로 하나만 선택한다.
+WK_SOURCE="${WK_INBOX}/파일명"  # inbox 파일
+# WK_SOURCE="/사용자가/직접/지정한/파일.mov"
+WK_AUDIO_TRACK=0                # 0부터 시작하는 오디오 트랙 순번
+
 ffprobe -v error -show_entries format=format_name,duration \
   -show_entries stream=index,codec_type,codec_name,channels,sample_rate \
-  -of json "inbox/파일명"
+  -of json "$WK_SOURCE"
 ```
 
 - 오디오 스트림이 없으면 중단하고 사용자에게 알린다.
 - 오디오 스트림이 하나면 그대로 사용한다.
-- 여러 오디오 스트림이 있으면 기본적으로 첫 번째를 사용하되, 언어·해설 등 트랙 선택이 결과에 영향을 줄 수 있으면 사용자에게 선택을 요청한다.
+- 여러 오디오 스트림이 있으면 기본적으로 첫 번째를 사용하되, 언어·해설 등 트랙 선택이 결과에 영향을 줄 수 있으면 사용자에게 선택을 요청하고 `WK_AUDIO_TRACK`에 0부터 시작하는 순번을 설정한다.
 - DRM 보호, 손상 파일, FFmpeg 미지원 코덱은 우회하지 말고 변환 불가 사유를 알린다.
 
 ### Step 3: 녹음 날짜 추출
 
 ```bash
-ffprobe -v quiet -show_entries format_tags=creation_time -of csv=p=0 "inbox/파일명"
+ffprobe -v quiet -show_entries format_tags=creation_time -of csv=p=0 "$WK_SOURCE"
 ```
 
 `creation_time`이 없으면 다음 순서로 처리한다.
@@ -88,13 +108,14 @@ ffprobe -v quiet -show_entries format_tags=creation_time -of csv=p=0 "inbox/파�
 ### Step 4: 폴더 생성 및 원본 이동
 
 - 날짜는 `YYYY-MM-DD` 형식을 사용한다.
-- 같은 날짜 폴더가 있으면 `_001`, `_002` 순으로 사용되지 않은 번호를 선택한다.
+- 선택한 루트 안에서 같은 날짜 폴더가 있으면 `_001`, `_002` 순으로 사용되지 않은 번호를 선택한다.
 - 원본 확장자를 유지해 `audio.<원본확장자>`로 이동한다.
 - 확장자가 없으면 `audio.source`를 사용한다.
 
 ```bash
-mkdir -p "rec_2026-03-30_001/data"
-mv "inbox/파일명.mov" "rec_2026-03-30_001/audio.mov"
+WK_RECORD_DIR="${WK_ROOT}/rec_2026-03-30_001"
+mkdir -p "${WK_RECORD_DIR}/data"
+mv "$WK_SOURCE" "${WK_RECORD_DIR}/audio.mov"
 ```
 
 이동 전에 사용자에게 확인한다. 원본을 삭제하거나 덮어쓰지 않는다.
@@ -105,8 +126,9 @@ mv "inbox/파일명.mov" "rec_2026-03-30_001/audio.mov"
 
 ```bash
 bash scripts/prepare-media.sh \
-  "rec_2026-03-30_001/audio.mov" \
-  "rec_2026-03-30_001/data/audio.wav"
+  "${WK_RECORD_DIR}/audio.mov" \
+  "${WK_RECORD_DIR}/data/audio.wav" \
+  "$WK_AUDIO_TRACK"
 ```
 
 정규화 규격:
@@ -125,13 +147,13 @@ bash scripts/prepare-media.sh \
 
 ```bash
 whisperkit-cli transcribe \
-  --audio-path "rec_2026-03-30_001/data/audio.wav" \
+  --audio-path "${WK_RECORD_DIR}/data/audio.wav" \
   --model large-v3 \
   --language ko \
   --diarization \
   --report \
-  --report-path "rec_2026-03-30_001/data/" \
-  2>&1 | tee "rec_2026-03-30_001/data/raw.txt"
+  --report-path "${WK_RECORD_DIR}/data/" \
+  2>&1 | tee "${WK_RECORD_DIR}/data/raw.txt"
 ```
 
 stdout을 반드시 캡처한다. 화자 분리 결과는 JSON/SRT가 아니라 stdout의 `SPEAKER` 라인에서 파싱한다.
@@ -156,8 +178,8 @@ stdout을 반드시 캡처한다. 화자 분리 결과는 JSON/SRT가 아니라 
 
 ```bash
 bash scripts/parse-speakers.sh \
-  "rec_2026-03-30_001/data/raw.txt" \
-  > "rec_2026-03-30_001/transcript.txt"
+  "${WK_RECORD_DIR}/data/raw.txt" \
+  > "${WK_RECORD_DIR}/transcript.txt"
 ```
 
 출력 형식:
@@ -197,3 +219,4 @@ bash scripts/parse-speakers.sh \
 - stdout 캡처 없이 화자 분리를 실행하지 않는다.
 - `--report-path`에 파일 경로를 지정하지 않는다.
 - 사용자의 확인 없이 inbox 원본을 이동하거나 삭제하지 않는다.
+- 기존 저장 구조가 있는데 다른 루트를 임의로 선택하거나 혼합하지 않는다.

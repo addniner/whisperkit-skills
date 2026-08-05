@@ -1,136 +1,140 @@
 ---
 name: setup
-description: "WhisperKit 트랜스크립션 환경을 자동 감지하고 셋업한다. 프로젝트를 처음 클론했을 때, 'whisperkit-cli: command not found' 에러가 났을 때, '설치해줘', '환경 세팅해줘', '셋업', 'setup', '의존성', 'brew install' 등을 요청할 때 사용한다. whisperkit 스킬 실행 시 의존성이 없으면 이 스킬이 자동으로 먼저 트리거된다."
+description: "WhisperKit 트랜스크립션 환경을 중앙 검사 스크립트로 진단하고 필요한 설치를 안내한다. 프로젝트를 처음 클론했거나, 'command not found' 오류가 발생했거나, '설치해줘', '환경 세팅해줘', '셋업', 'setup', '의존성 확인', 'brew install' 등을 요청할 때 사용한다. whisperkit 스킬의 환경 사전 검사에 항상 이 스킬의 check-env.sh를 사용한다."
 ---
 
-# 환경 자동 감지 및 셋업
+# 환경 검사 및 셋업
 
-프로젝트 의존성을 한 번에 검사하고, 누락된 항목을 설치하는 스킬.
-모든 검사를 먼저 수행한 뒤 결과를 테이블로 보여주고, 사용자 확인 후 설치를 진행한다.
+`scripts/check-env.sh`를 환경 판정의 단일 진실 공급원으로 사용한다. 에이전트가 `uname`, `which`, 캐시 경로 같은 검사를 따로 반복하면 문서와 실제 판정이 어긋날 수 있으므로, 스크립트의 JSON 결과를 읽고 필요한 후속 행동만 수행한다.
 
-## 감지 항목
+## 환경 검사
 
-아래 항목을 **병렬로** 검사한다. 단, 플랫폼 호환성이 FAIL이면 나머지는 스킵한다.
-
-### 1. 플랫폼 호환성
+프로젝트 루트에서 에이전트용 JSON 검사를 실행한다.
 
 ```bash
-uname -m          # 기대값: arm64
-sw_vers -productVersion  # 기대값: 13.0 이상
+bash scripts/check-env.sh --json
 ```
 
-**CRITICAL:** `x86_64`이면 즉시 중단한다. WhisperKit은 Apple Silicon Neural Engine 전용이며, Intel Mac에서는 동작하지 않는다. Rosetta 2로도 실행할 수 없다.
-
-### 2. Homebrew
+사용자에게 직접 보여줄 결과가 필요하면 표 형식을 사용한다.
 
 ```bash
-which brew
+bash scripts/check-env.sh
 ```
 
-설치 명령:
+스크립트는 다음 항목을 한 번에 검사한다.
+
+- Apple Silicon 여부
+- macOS 14 이상 여부
+- Homebrew 설치 및 PATH 상태
+- 깨끗한 새 zsh 로그인 셸에서 Homebrew가 인식되는지
+- `whisperkit-cli`
+- `ffmpeg`와 `ffprobe`
+- WhisperKit 모델 캐시
+
+스크립트는 읽기 전용이다. 패키지를 설치하거나 디렉토리를 생성하지 않는다.
+
+## JSON 계약
+
+```json
+{
+  "schema_version": 1,
+  "platform_ok": true,
+  "has_fail": false,
+  "results": [
+    {
+      "name": "whisperkit-cli",
+      "status": "pass",
+      "detail": "/opt/homebrew/bin/whisperkit-cli"
+    }
+  ]
+}
+```
+
+- `platform_ok=false`: 즉시 중단하고 Apple Silicon 및 macOS 14+ 요구사항을 안내한다.
+- `has_fail=true`: 필수 실행 명령이 없으므로 STT를 시작하지 않는다.
+- `status=warn`: 실행을 막지 않는다. `detail`에 따라 필요한 준비만 수행한다.
+- 종료 코드 `0`: 필수 검사 통과
+- 종료 코드 `1`: 필수 명령 누락
+- 종료 코드 `2`: 플랫폼 비호환
+
+검사 결과를 받은 뒤 같은 항목을 수동 명령으로 재검사하지 않는다. 환경을 변경한 경우에만 `check-env.sh --json`을 다시 실행해 최종 상태를 확인한다.
+
+## 결과별 조치
+
+### Homebrew가 현재 PATH에 없음
+
+결과가 `설치됨, PATH 미설정`이면 설치를 반복하지 않고 현재 셸에 Homebrew를 활성화한다.
+
+```bash
+eval "$(/opt/homebrew/bin/brew shellenv)"
+```
+
+### Homebrew가 새 로그인 셸에서 인식되지 않음
+
+`Homebrew 로그인 셸` 결과가 `warn`이면 새 터미널에 설정이 적용되지 않은 상태다. 사용자 확인 후 설정을 중복 없이 추가한다.
+
+```bash
+BREW_SHELLENV_LINE='eval "$(/opt/homebrew/bin/brew shellenv)"'
+grep -qxF "$BREW_SHELLENV_LINE" ~/.zprofile 2>/dev/null \
+  || printf '%s\n' "$BREW_SHELLENV_LINE" >> ~/.zprofile
+```
+
+### Homebrew가 없고 필수 명령도 누락됨
+
+Homebrew는 권장 설치 수단이다. 설치 전에 사용자 승인을 받는다.
+
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-**Note:** Homebrew 설치 시 Xcode Command Line Tools도 함께 설치된다. 네트워크 상태에 따라 수 분 소요될 수 있다.
-
-### 3. whisperkit-cli
+설치 프로그램이 출력하는 `Next steps`를 우선 따른다. Apple Silicon 기본 경로에서는 보통 다음 명령으로 현재 셸과 이후 셸에 PATH를 적용한다.
 
 ```bash
-which whisperkit-cli
+BREW_SHELLENV_LINE='eval "$(/opt/homebrew/bin/brew shellenv)"'
+grep -qxF "$BREW_SHELLENV_LINE" ~/.zprofile 2>/dev/null \
+  || printf '%s\n' "$BREW_SHELLENV_LINE" >> ~/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
 ```
 
-설치 명령:
+### Homebrew 설치가 개발 도구 오류로 실패
+
+Homebrew 설치 출력이 Xcode Command Line Tools 누락을 가리키면 사용자 승인 후 설치한다.
+
+```bash
+xcode-select --install
+```
+
+설치 완료를 사용자가 확인하면 Homebrew 설치를 다시 실행하고, 위 `brew shellenv` 설정을 적용한다.
+
+`brew doctor`는 일반적인 Homebrew 문제 진단에 사용할 수 있지만 `.zprofile` 영구 적용 여부의 단일 판정으로 사용하지 않는다. `check-env.sh`가 깨끗한 새 zsh 로그인 셸에서 `command -v brew`를 실행한 결과를 기준으로 삼는다.
+
+### 필수 명령 누락
+
+Homebrew가 활성화된 뒤, 검사 결과에서 누락된 항목만 설치하도록 사용자 승인을 받는다.
+
 ```bash
 brew install whisperkit-cli
-```
-
-### 4. ffmpeg / ffprobe
-
-```bash
-which ffmpeg && which ffprobe
-```
-
-설치 명령:
-```bash
 brew install ffmpeg
 ```
 
-**Note:** ffmpeg을 설치하면 ffprobe도 함께 설치된다. 별도 설치 불필요.
+`ffmpeg` formula에 `ffprobe`가 포함되므로 별도 설치하지 않는다.
 
-### 5. WhisperKit 모델 캐시
+### 모델 캐시 없음
 
-```bash
-ls ~/Library/Caches/huggingface/hub/models--argmaxinc--whisperkit-coreml/ 2>/dev/null \
-  || ls ~/.cache/huggingface/hub/models--argmaxinc--whisperkit-coreml/ 2>/dev/null
-```
+실행을 막지 않는다. 첫 STT에서 모델 약 1.5GB를 다운로드할 수 있으므로 네트워크와 소요 시간을 사용자에게 알린다.
 
-- 없으면 **WARN** — "첫 트랜스크립션 시 large-v3 모델이 자동 다운로드됩니다 (~1.5GB). Wi-Fi 환경 권장."
-- 미리 다운로드하고 싶으면:
-```bash
-whisperkit-cli transcribe --model large-v3 --audio-path /dev/null 2>&1 || true
-```
+## 실행 순서
 
-### 6. inbox 디렉토리
-
-```bash
-[ -d "inbox" ] || mkdir -p inbox
-```
-
-자동 생성. 사용자 확인 불필요.
-
-## 실행 가이드
-
-### 검사 스크립트
-
-`scripts/check-env.sh`로 모든 항목을 한 번에 검사할 수 있다:
-
-```bash
-bash scripts/check-env.sh          # 터미널 출력
-bash scripts/check-env.sh --json   # JSON 출력 (프로그래밍용)
-```
-
-종료 코드: `0` = 모두 통과, `1` = 필수 항목 FAIL, `2` = 플랫폼 비호환
-
-### 출력 형식
-
-모든 검사 후 결과를 테이블로 보여준다:
-
-```
-## 환경 검사 결과
-
-| 항목                  | 상태 | 비고                          |
-|-----------------------|------|-------------------------------|
-| Apple Silicon         | PASS | arm64                         |
-| macOS 버전            | PASS | 15.3                          |
-| Homebrew              | PASS | /opt/homebrew/bin/brew        |
-| whisperkit-cli        | FAIL | 미설치                        |
-| ffmpeg/ffprobe        | PASS | /opt/homebrew/bin/ffmpeg      |
-| WhisperKit 모델 캐시  | WARN | 첫 실행 시 ~1.5GB 다운로드   |
-| inbox 디렉토리        | PASS | 존재                          |
-```
-
-### 동작 순서
-
-1. **전체 검사 수행** — 모든 항목을 한 번에 검사하고 테이블로 출력
-2. **FAIL 항목 설치 제안** — "다음 항목을 설치하시겠습니까?" 형태로 확인
-3. **사용자 승인 후 설치** — 승인된 항목만 설치
-4. **재검사** — 설치 완료 후 전체 재검사하여 최종 상태 확인
-
-**IMPORTANT:** 모든 설치 명령은 사용자 확인 후 실행한다. 자동 설치하지 않는다.
-
-## 실패 대응
-
-| 상황 | 대응 |
-|------|------|
-| Intel Mac (`x86_64`) | 즉시 중단. "Apple Silicon Mac이 필요합니다" 안내 |
-| macOS 12 이하 | "macOS 13 이상으로 업그레이드 필요" 안내 |
-| Homebrew 설치 실패 | Xcode CLT 수동 설치 안내: `xcode-select --install` |
-| brew install 타임아웃 | 네트워크 확인 안내, `brew update` 후 재시도 |
-| 모델 다운로드 실패 | HuggingFace 네트워크 접근 확인, 프록시 설정 확인 |
+1. `check-env.sh --json`을 한 번 실행한다.
+2. `platform_ok`와 `has_fail`, 각 `status`를 읽는다.
+3. 설치가 필요하면 사용자 승인을 받은 뒤 누락 항목만 설치한다.
+4. 환경이 바뀌었으면 스크립트를 다시 실행한다.
+5. `platform_ok=true`, `has_fail=false`가 확인되면 작업을 계속한다.
 
 ## 하면 안 되는 것
 
-- **사용자 확인 없이 brew install 실행 금지** — 시스템 패키지 설치는 반드시 사용자 동의 필요
-- **Intel Mac에서 Rosetta 우회 시도 금지** — WhisperKit CoreML은 Neural Engine 전용
-- **sudo로 Homebrew 설치 금지** — Homebrew는 사용자 권한으로 설치해야 함
+- 스크립트 실행 전에 동일한 환경 검사를 개별 명령으로 반복하지 않는다.
+- 사용자 확인 없이 Homebrew나 formula를 설치하지 않는다.
+- Homebrew가 없다는 이유만으로 실패 처리하지 않는다. 필수 명령의 존재 여부가 기준이다.
+- Homebrew를 `sudo`로 설치하지 않는다.
+- Intel Mac에서 Rosetta 우회를 시도하지 않는다.
